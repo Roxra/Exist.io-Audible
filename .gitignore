@@ -1,0 +1,4 @@
+.env
+audible_auth.json
+exist_attributes.json
+__pycache__/
