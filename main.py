@@ -13,7 +13,6 @@ import requests
 
 BASE_DIR = Path(__file__).resolve().parent
 AUDIBLE_AUTH_FILE = BASE_DIR / "audible_auth.json"
-ATTRIBUTE_CACHE_FILE = BASE_DIR / "exist_attributes.json"
 EXIST_API = "https://exist.io/api/2"
 EXIST_ATTRIBUTE_DEFINITIONS = [
     {
@@ -101,16 +100,6 @@ def request_json(method: str, url: str, **kwargs: Any) -> Any:
     return payload
 
 
-def cache_attribute_names(mapping: dict[str, str]) -> None:
-    ATTRIBUTE_CACHE_FILE.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
-
-
-def load_attribute_names() -> dict[str, str]:
-    if ATTRIBUTE_CACHE_FILE.exists():
-        return json.loads(ATTRIBUTE_CACHE_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
 def fetch_existing_attribute_names() -> dict[str, str]:
     results: list[dict[str, Any]] = []
     next_url: str | None = f"{EXIST_API}/attributes/"
@@ -151,13 +140,10 @@ def merge_attribute_names(*mappings: dict[str, str]) -> dict[str, str]:
 
 
 def ensure_exist_attributes() -> dict[str, str]:
-    cached = load_attribute_names()
     existing = fetch_existing_attribute_names()
-    resolved = merge_attribute_names(cached, existing)
-    missing = [definition for definition in EXIST_ATTRIBUTE_DEFINITIONS if definition["key"] not in resolved]
+    missing = [definition for definition in EXIST_ATTRIBUTE_DEFINITIONS if definition["key"] not in existing]
     if not missing:
-        cache_attribute_names(resolved)
-        return resolved
+        return existing
 
     payload = [
         {
@@ -179,7 +165,7 @@ def ensure_exist_attributes() -> dict[str, str]:
 
     # Match returned attributes back to our local keys by label.
     by_label = {definition["label"]: definition["key"] for definition in missing}
-    updated = dict(resolved)
+    updated = dict(existing)
 
     for item in response.get("success", []):
         key = by_label.get(item.get("label"))
@@ -190,7 +176,6 @@ def ensure_exist_attributes() -> dict[str, str]:
     refreshed = merge_attribute_names(updated, fetch_existing_attribute_names())
     unresolved = [definition["key"] for definition in missing if definition["key"] not in refreshed]
     if not unresolved:
-        cache_attribute_names(refreshed)
         return refreshed
 
     failed_descriptions = ", ".join(
@@ -203,7 +188,6 @@ def ensure_exist_attributes() -> dict[str, str]:
             details = f"{details}. Create errors: {failed_descriptions}"
         raise RuntimeError(f"Could not ensure Exist attributes. {details}")
 
-    cache_attribute_names(refreshed)
     return refreshed
 
 

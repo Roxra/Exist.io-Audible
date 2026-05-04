@@ -7,14 +7,13 @@ Sync Audible listening data into [Exist](https://exist.io/) with Python. Uses th
 This script:
 
 - authorizes with Audible in your browser and stores reusable device credentials locally
-- creates a small set of custom Exist attributes and caches their internal names locally
 - fetches today's Audible listening stats
 - writes the values into Exist
 
 ## Attributes created in Exist
 
-- `Audible listening` as minutes
-- `Audible books finished` as an integer count
+- `Audible listening` as minutes (Media)
+- `Audible books finished` as an integer count (Media)
 
 ## Setup
 
@@ -24,9 +23,13 @@ This script:
 pip install -r requirements.txt
 ```
 
-This includes `tzdata`, which helps Python resolve IANA timezones such as `Europe/London` on Windows.
+2. Make a new Developer API Client on Exist.io (Account Settings -> Developer Clients -> Add a new client)
+- Name = Whatever you want!
+- Support Email = Whatever you want!
+- Redirect URI = http://localhost:8000/
+- OAuth2 client type = Confidential
 
-2. Make a new Developer API Client on Exist.io, you will use the access key for the 'EXIST_TOKEN" environment variable.
+You will use the resulting access key for the 'EXIST_TOKEN" environment variable.
 
 3. Copy `.env.example` values into your shell environment.
 
@@ -42,9 +45,6 @@ Optional variables:
 ## Local files
 
 - `audible_auth.json` stores the reusable Audible device credentials created by `python main.py auth`
-- `exist_attributes.json` caches the Exist attribute names so future syncs do not need to recreate them
-
-If `exist_attributes.json` is deleted, the script will rebuild it by reading your existing attributes from Exist.
 
 ## First run
 
@@ -59,3 +59,5 @@ Sync today's data:
 ```bash
 python main.py sync
 ```
+
+I'd recommend using Task Scheduler (or any equivalent) to run this script once a day at whatever time works best for your timezone and Audible's data availability.
