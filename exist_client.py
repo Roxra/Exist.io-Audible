@@ -17,6 +17,7 @@ EXIST_API = "https://exist.io/api/2"
 EXIST_DEFAULT_REDIRECT_URI = "http://localhost:8000/"
 EXIST_DEFAULT_SCOPE = "media_write"
 EXIST_REFRESH_WINDOW = dt.timedelta(days=7)
+EXIST_MAX_UPDATE_OBJECTS = 36
 
 
 def env(name: str, default: str | None = None) -> str | None:
@@ -51,7 +52,11 @@ def write_json_file(path: Path, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
-class ExistOAuthClient:
+def chunked(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+class ExistClient:
     def __init__(
         self,
         token_file: Path,
@@ -349,9 +354,35 @@ class ExistOAuthClient:
             details = f"{details}. Create errors: {failed_descriptions}"
         raise RuntimeError(f"Could not ensure Exist attributes. {details}")
 
-    def post_updates(self, payload: list[dict[str, Any]]) -> Any:
-        return self.request_json(
-            "POST",
-            f"{EXIST_API}/attributes/update/",
-            data=json.dumps(payload),
-        )
+    def build_update_payload(
+        self,
+        attribute_names: dict[str, str],
+        day: str,
+        values_by_key: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for key, value in values_by_key.items():
+            attribute_name = attribute_names.get(key)
+            if not attribute_name:
+                raise RuntimeError(f"Missing Exist attribute mapping for key: {key}")
+            payload.append(
+                {
+                    "name": attribute_name,
+                    "date": day,
+                    "value": value,
+                }
+            )
+        return payload
+
+    def post_updates(self, payload: list[dict[str, Any]]) -> dict[str, Any]:
+        successes: list[Any] = []
+        failed_entries: list[Any] = []
+        for batch in chunked(payload, EXIST_MAX_UPDATE_OBJECTS):
+            result = self.request_json(
+                "POST",
+                f"{EXIST_API}/attributes/update/",
+                data=json.dumps(batch),
+            )
+            successes.extend(result.get("success", []))
+            failed_entries.extend(result.get("failed", []))
+        return {"success": successes, "failed": failed_entries}

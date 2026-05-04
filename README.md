@@ -61,16 +61,10 @@ Sync today's and yesterday's data:
 python main.py sync
 ```
 
-Backfill recent days from yesterday backwards (defaults to 14 days):
+Sync a larger recent window including today:
 
 ```bash
-python main.py sync-recent
-```
-
-Backfill a specific recent window:
-
-```bash
-python main.py sync-recent --days 7
+python main.py sync --days 30
 ```
 
 Inspect the Audible daily stats and finished-book count for a specific day:
