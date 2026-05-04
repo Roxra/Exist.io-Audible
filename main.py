@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import audible
 import requests
@@ -58,15 +59,33 @@ def audible_locale() -> str:
     return required_env("AUDIBLE_LOCALE")
 
 
-def user_today() -> str:
-    timezone = env("EXIST_USER_TIMEZONE", "Europe/London")
+def user_timezone() -> ZoneInfo:
+    timezone_name = env("EXIST_USER_TIMEZONE", "Europe/London")
     try:
-        from zoneinfo import ZoneInfo
-
-        return dt.datetime.now(ZoneInfo(timezone)).date().isoformat()
+        return ZoneInfo(timezone_name)
     except Exception:
-        logging.warning("Falling back to system local date because timezone %r could not be loaded.", timezone)
-        return dt.date.today().isoformat()
+        logging.warning(
+            "Falling back to the system local timezone because %r could not be loaded. "
+            "Install the `tzdata` package if you want reliable IANA timezone support on this platform.",
+            timezone_name,
+        )
+        fallback = dt.datetime.now().astimezone().tzinfo
+        if fallback is None:
+            raise RuntimeError(
+                "Could not determine a usable timezone. Install the `tzdata` package "
+                "or unset EXIST_USER_TIMEZONE to use your system local timezone."
+            )
+        return fallback
+
+
+def user_today() -> str:
+    return dt.datetime.now(user_timezone()).date().isoformat()
+
+
+def day_start_utc(day: str) -> str:
+    local_day = dt.date.fromisoformat(day)
+    local_midnight = dt.datetime.combine(local_day, dt.time.min, tzinfo=user_timezone())
+    return local_midnight.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def request_json(method: str, url: str, **kwargs: Any) -> Any:
@@ -92,11 +111,53 @@ def load_attribute_names() -> dict[str, str]:
     return {}
 
 
+def fetch_existing_attribute_names() -> dict[str, str]:
+    results: list[dict[str, Any]] = []
+    next_url: str | None = f"{EXIST_API}/attributes/"
+    params: dict[str, Any] | None = {
+        "limit": 100,
+        "owned": "true",
+        "include_inactive": "true",
+    }
+
+    while next_url:
+        response = request_json("GET", next_url, headers=exist_headers(), params=params)
+        params = None
+        page_results = response.get("results", [])
+        if not isinstance(page_results, list):
+            raise RuntimeError(f"Unexpected Exist attributes response: {response}")
+        results.extend(item for item in page_results if isinstance(item, dict))
+        next_value = response.get("next")
+        next_url = next_value if isinstance(next_value, str) and next_value else None
+
+    by_label = {
+        definition["label"]: definition["key"]
+        for definition in EXIST_ATTRIBUTE_DEFINITIONS
+    }
+    mapping: dict[str, str] = {}
+    for item in results:
+        key = by_label.get(item.get("label"))
+        name = item.get("name")
+        if key and isinstance(name, str) and name:
+            mapping[key] = name
+    return mapping
+
+
+def merge_attribute_names(*mappings: dict[str, str]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for mapping in mappings:
+        merged.update(mapping)
+    return merged
+
+
 def ensure_exist_attributes() -> dict[str, str]:
     cached = load_attribute_names()
-    missing = [definition for definition in EXIST_ATTRIBUTE_DEFINITIONS if definition["key"] not in cached]
+    existing = fetch_existing_attribute_names()
+    resolved = merge_attribute_names(cached, existing)
+    missing = [definition for definition in EXIST_ATTRIBUTE_DEFINITIONS if definition["key"] not in resolved]
     if not missing:
-        return cached
+        cache_attribute_names(resolved)
+        return resolved
 
     payload = [
         {
@@ -118,7 +179,7 @@ def ensure_exist_attributes() -> dict[str, str]:
 
     # Match returned attributes back to our local keys by label.
     by_label = {definition["label"]: definition["key"] for definition in missing}
-    updated = dict(cached)
+    updated = dict(resolved)
 
     for item in response.get("success", []):
         key = by_label.get(item.get("label"))
@@ -126,16 +187,24 @@ def ensure_exist_attributes() -> dict[str, str]:
             updated[key] = item["name"]
 
     failed = response.get("failed", [])
-    if failed:
-        failed_descriptions = ", ".join(f"{item.get('label', '<unknown>')}: {item.get('error', 'unknown error')}" for item in failed)
-        raise RuntimeError(f"Exist attribute creation failed: {failed_descriptions}")
+    refreshed = merge_attribute_names(updated, fetch_existing_attribute_names())
+    unresolved = [definition["key"] for definition in missing if definition["key"] not in refreshed]
+    if not unresolved:
+        cache_attribute_names(refreshed)
+        return refreshed
 
-    unresolved = [definition["key"] for definition in missing if definition["key"] not in updated]
+    failed_descriptions = ", ".join(
+        f"{item.get('label', '<unknown>')}: {item.get('error', 'unknown error')}"
+        for item in failed
+    )
     if unresolved:
-        raise RuntimeError(f"Exist returned success but no attribute names for: {', '.join(unresolved)}")
+        details = f"Missing attribute names for: {', '.join(unresolved)}"
+        if failed_descriptions:
+            details = f"{details}. Create errors: {failed_descriptions}"
+        raise RuntimeError(f"Could not ensure Exist attributes. {details}")
 
-    cache_attribute_names(updated)
-    return updated
+    cache_attribute_names(refreshed)
+    return refreshed
 
 
 def load_auth() -> audible.Authenticator:
@@ -143,35 +212,15 @@ def load_auth() -> audible.Authenticator:
         raise RuntimeError(
             f"Missing Audible auth file at {AUDIBLE_AUTH_FILE}. Run `python main.py auth` first."
         )
-    password = env("AUDIBLE_AUTH_FILE_PASSWORD")
-    if password:
-        return audible.Authenticator.from_file(str(AUDIBLE_AUTH_FILE), password)
     return audible.Authenticator.from_file(str(AUDIBLE_AUTH_FILE))
 
 
 def save_auth(auth: audible.Authenticator) -> None:
-    password = env("AUDIBLE_AUTH_FILE_PASSWORD")
-    if password:
-        auth.to_file(str(AUDIBLE_AUTH_FILE), password, encryption="json")
-    else:
-        auth.to_file(str(AUDIBLE_AUTH_FILE), encryption=False)
+    auth.to_file(str(AUDIBLE_AUTH_FILE), encryption=False)
 
 
-def login_to_audible(external_browser: bool) -> None:
-    locale = audible_locale()
-    if external_browser:
-        auth = audible.Authenticator.from_login_external(locale=locale)
-    else:
-        username = required_env("AUDIBLE_USERNAME")
-        password = required_env("AUDIBLE_PASSWORD")
-        with_username = env("AUDIBLE_WITH_USERNAME", "false").lower() == "true"
-        auth = audible.Authenticator.from_login(
-            username,
-            password,
-            locale=locale,
-            with_username=with_username,
-        )
-
+def login_to_audible() -> None:
+    auth = audible.Authenticator.from_login_external(locale=audible_locale())
     save_auth(auth)
     logging.info("Saved Audible auth to %s", AUDIBLE_AUTH_FILE)
 
@@ -319,7 +368,7 @@ def extract_minutes(stats_json: dict[str, Any]) -> int:
 
 
 def fetch_finished_count(client: audible.Client, day: str) -> int:
-    start_date = f"{day}T00:00:00Z"
+    start_date = day_start_utc(day)
     response = client.get("1.0/stats/status/finished", start_date=start_date)
     if isinstance(response, list):
         return len(response)
@@ -332,7 +381,7 @@ def fetch_finished_count(client: audible.Client, day: str) -> int:
     return 0
 
 
-def build_exist_payload(day: str, attribute_names: dict[str, str], books: list[dict[str, Any]], stats: dict[str, Any], finished_count: int) -> list[dict[str, Any]]:
+def build_exist_payload(day: str, attribute_names: dict[str, str], stats: dict[str, Any], finished_count: int) -> list[dict[str, Any]]:
     payload = [
         {
             "name": attribute_names["audible_listening_minutes"],
@@ -363,11 +412,10 @@ def sync_today() -> None:
     day = user_today()
 
     with audible_client() as client:
-        books = fetch_library(client)
         stats = fetch_daily_stats(client, day)
         finished_count = fetch_finished_count(client, day)
 
-    payload = build_exist_payload(day, attribute_names, books, stats, finished_count)
+    payload = build_exist_payload(day, attribute_names, stats, finished_count)
     result = post_exist_updates(payload)
     logging.info("Synced %s values for %s", len(result.get("success", [])), day)
     if result.get("failed"):
@@ -391,13 +439,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sync Audible listening data into Exist.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    auth_parser = subparsers.add_parser("auth", help="Authorize Audible and save device credentials.")
-    auth_parser.add_argument(
-        "--external-browser",
-        action="store_true",
-        help="Use Audible's external browser login flow instead of username/password env vars.",
-    )
-
+    subparsers.add_parser("auth", help="Authorize Audible in your browser and save device credentials.")
     subparsers.add_parser("sync", help="Fetch Audible data and push today's values to Exist.")
     subparsers.add_parser("inspect-stats", help="Print the raw Audible daily stats response.")
     subparsers.add_parser("inspect-library", help="Print the first few Audible library items.")
@@ -411,7 +453,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "auth":
-        login_to_audible(external_browser=args.external_browser)
+        login_to_audible()
     elif args.command == "sync":
         sync_today()
     elif args.command == "inspect-stats":

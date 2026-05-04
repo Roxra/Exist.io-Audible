@@ -1,13 +1,13 @@
 # Audible to Exist
 
-Sync Audible listening data into [Exist](https://exist.io/) with Python.
+Sync Audible listening data into [Exist](https://exist.io/) with Python. Uses the [Audible Python API](https://github.com/mkb79/Audible).
 
 ## What this does
 
 This script:
 
-- logs into Audible and stores reusable device credentials
-- creates a small set of custom Exist attributes
+- authorizes with Audible in your browser and stores reusable device credentials locally
+- creates a small set of custom Exist attributes and caches their internal names locally
 - fetches today's Audible listening stats
 - writes the values into Exist
 
@@ -24,6 +24,8 @@ This script:
 pip install -r requirements.txt
 ```
 
+This includes `tzdata`, which helps Python resolve IANA timezones such as `Europe/London` on Windows.
+
 2. Make a new Developer API Client on Exist.io, you will use the access key for the 'EXIST_TOKEN" environment variable.
 
 3. Copy `.env.example` values into your shell environment.
@@ -35,21 +37,18 @@ Required variables:
 
 Optional variables:
 
-- `AUDIBLE_USERNAME`
-- `AUDIBLE_PASSWORD`
-- `AUDIBLE_WITH_USERNAME`
-- `AUDIBLE_AUTH_FILE_PASSWORD`
 - `EXIST_USER_TIMEZONE`
+
+## Local files
+
+- `audible_auth.json` stores the reusable Audible device credentials created by `python main.py auth`
+- `exist_attributes.json` caches the Exist attribute names so future syncs do not need to recreate them
+
+If `exist_attributes.json` is deleted, the script will rebuild it by reading your existing attributes from Exist.
 
 ## First run
 
-Authorize Audible and save credentials:
-
-```bash
-python main.py auth --external-browser
-```
-
-Or, if you prefer direct login and have set `AUDIBLE_USERNAME` and `AUDIBLE_PASSWORD`:
+Authorize Audible in your browser and save credentials:
 
 ```bash
 python main.py auth
