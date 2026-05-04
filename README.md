@@ -41,12 +41,6 @@ Required variables:
 - `EXIST_CLIENT_SECRET`
 - `AUDIBLE_LOCALE`
 
-Optional variables:
-
-- `EXIST_REDIRECT_URI`
-- `EXIST_SCOPE`
-- `EXIST_USER_TIMEZONE`
-
 ## Local files
 
 - `audible_auth.json` stores the reusable Audible device credentials created by `python main.py auth`
@@ -73,3 +67,4 @@ python main.py sync
 ```
 
 I'd recommend using Task Scheduler (or any equivalent) to run this script once a day just before midnight.
+The script uses the machine's local timezone when deciding what counts as "today".

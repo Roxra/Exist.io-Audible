@@ -5,7 +5,6 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import audible
 
@@ -15,7 +14,8 @@ from exist_oauth import ExistOAuthClient
 BASE_DIR = Path(__file__).resolve().parent
 AUDIBLE_AUTH_FILE = BASE_DIR / "audible_auth.json"
 EXIST_OAUTH_FILE = BASE_DIR / "exist_oauth.json"
-EXIST_API = "https://exist.io/api/2"
+EXIST_REDIRECT_URI = "http://localhost:8000/"
+EXIST_SCOPE = "media_write"
 EXIST_ATTRIBUTE_DEFINITIONS = [
     {
         "key": "audible_listening_minutes",
@@ -61,144 +61,31 @@ def exist_client_secret() -> str:
     return required_env("EXIST_CLIENT_SECRET")
 
 
-def exist_redirect_uri() -> str:
-    return env("EXIST_REDIRECT_URI", "http://localhost:8000/") or "http://localhost:8000/"
-
-
-def exist_scope() -> str:
-    return env("EXIST_SCOPE", "media_write") or "media_write"
-
-
 def exist_oauth_client() -> ExistOAuthClient:
     return ExistOAuthClient(
         token_file=EXIST_OAUTH_FILE,
         client_id=exist_client_id(),
         client_secret=exist_client_secret(),
-        redirect_uri=exist_redirect_uri(),
-        scope=exist_scope(),
+        redirect_uri=EXIST_REDIRECT_URI,
+        scope=EXIST_SCOPE,
     )
 
 
-def user_timezone() -> ZoneInfo:
-    timezone_name = env("EXIST_USER_TIMEZONE", "Europe/London")
-    try:
-        return ZoneInfo(timezone_name)
-    except Exception:
-        logging.warning(
-            "Falling back to the system local timezone because %r could not be loaded. "
-            "Install the `tzdata` package if you want reliable IANA timezone support on this platform.",
-            timezone_name,
-        )
-        fallback = dt.datetime.now().astimezone().tzinfo
-        if fallback is None:
-            raise RuntimeError(
-                "Could not determine a usable timezone. Install the `tzdata` package "
-                "or unset EXIST_USER_TIMEZONE to use your system local timezone."
-            )
-        return fallback
-
-
 def user_today() -> str:
-    return dt.datetime.now(user_timezone()).date().isoformat()
+    return dt.datetime.now().astimezone().date().isoformat()
 
 
 def day_start_utc(day: str) -> str:
     local_day = dt.date.fromisoformat(day)
-    local_midnight = dt.datetime.combine(local_day, dt.time.min, tzinfo=user_timezone())
+    local_timezone = dt.datetime.now().astimezone().tzinfo
+    if local_timezone is None:
+        raise RuntimeError("Could not determine the system local timezone.")
+    local_midnight = dt.datetime.combine(local_day, dt.time.min, tzinfo=local_timezone)
     return local_midnight.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def exist_request_json(method: str, url: str, **kwargs: Any) -> Any:
-    return exist_oauth_client().request_json(method, url, **kwargs)
 
 
 def login_to_exist() -> None:
     exist_oauth_client().login()
-
-
-def fetch_existing_attribute_names() -> dict[str, str]:
-    results: list[dict[str, Any]] = []
-    next_url: str | None = f"{EXIST_API}/attributes/owned/"
-    params: dict[str, Any] | None = {
-        "limit": 100,
-        "include_inactive": "true",
-    }
-
-    while next_url:
-        response = exist_request_json("GET", next_url, params=params)
-        params = None
-        page_results = response.get("results", [])
-        if not isinstance(page_results, list):
-            raise RuntimeError(f"Unexpected Exist attributes response: {response}")
-        results.extend(item for item in page_results if isinstance(item, dict))
-        next_value = response.get("next")
-        next_url = next_value if isinstance(next_value, str) and next_value else None
-
-    by_label = {
-        definition["label"]: definition["key"]
-        for definition in EXIST_ATTRIBUTE_DEFINITIONS
-    }
-    mapping: dict[str, str] = {}
-    for item in results:
-        key = by_label.get(item.get("label"))
-        name = item.get("name")
-        if key and isinstance(name, str) and name:
-            mapping[key] = name
-    return mapping
-
-
-def merge_attribute_names(*mappings: dict[str, str]) -> dict[str, str]:
-    merged: dict[str, str] = {}
-    for mapping in mappings:
-        merged.update(mapping)
-    return merged
-
-
-def ensure_exist_attributes() -> dict[str, str]:
-    existing = fetch_existing_attribute_names()
-    missing = [definition for definition in EXIST_ATTRIBUTE_DEFINITIONS if definition["key"] not in existing]
-    if not missing:
-        return existing
-
-    payload = [
-        {
-            "label": definition["label"],
-            "group": definition["group"],
-            "value_type": definition["value_type"],
-            "manual": definition["manual"],
-        }
-        for definition in missing
-    ]
-
-    response = exist_request_json(
-        "POST",
-        f"{EXIST_API}/attributes/create/",
-        params={"success_objects": "1"},
-        data=json.dumps(payload),
-    )
-
-    by_label = {definition["label"]: definition["key"] for definition in missing}
-    updated = dict(existing)
-
-    for item in response.get("success", []):
-        key = by_label.get(item.get("label"))
-        if key:
-            updated[key] = item["name"]
-
-    failed = response.get("failed", [])
-    refreshed = merge_attribute_names(updated, fetch_existing_attribute_names())
-    unresolved = [definition["key"] for definition in missing if definition["key"] not in refreshed]
-    if not unresolved:
-        return refreshed
-
-    failed_descriptions = ", ".join(
-        f"{item.get('label', '<unknown>')}: {item.get('error', 'unknown error')}"
-        for item in failed
-    )
-    details = f"Missing attribute names for: {', '.join(unresolved)}"
-    if failed_descriptions:
-        details = f"{details}. Create errors: {failed_descriptions}"
-    raise RuntimeError(f"Could not ensure Exist attributes. {details}")
 
 
 def load_auth() -> audible.Authenticator:
@@ -396,15 +283,11 @@ def build_exist_payload(
 
 
 def post_exist_updates(payload: list[dict[str, Any]]) -> Any:
-    return exist_request_json(
-        "POST",
-        f"{EXIST_API}/attributes/update/",
-        data=json.dumps(payload),
-    )
+    return exist_oauth_client().post_updates(payload)
 
 
 def sync_today() -> None:
-    attribute_names = ensure_exist_attributes()
+    attribute_names = exist_oauth_client().ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
     day = user_today()
 
     with audible_client() as client:

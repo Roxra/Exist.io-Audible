@@ -13,6 +13,7 @@ import requests
 
 EXIST_AUTHORIZE_URL = "https://exist.io/oauth2/authorize"
 EXIST_ACCESS_TOKEN_URL = "https://exist.io/oauth2/access_token"
+EXIST_API = "https://exist.io/api/2"
 EXIST_DEFAULT_REDIRECT_URI = "http://localhost:8000/"
 EXIST_DEFAULT_SCOPE = "media_write"
 EXIST_REFRESH_WINDOW = dt.timedelta(days=7)
@@ -273,3 +274,84 @@ class ExistOAuthClient:
         )
         self.save_tokens(token_payload)
         logging.info("Saved Exist OAuth tokens to %s", self.token_file)
+
+    def fetch_owned_attribute_names(self, definitions: list[dict[str, Any]]) -> dict[str, str]:
+        results: list[dict[str, Any]] = []
+        next_url: str | None = f"{EXIST_API}/attributes/owned/"
+        params: dict[str, Any] | None = {
+            "limit": 100,
+            "include_inactive": "true",
+        }
+
+        while next_url:
+            response = self.request_json("GET", next_url, params=params)
+            params = None
+            page_results = response.get("results", [])
+            if not isinstance(page_results, list):
+                raise RuntimeError(f"Unexpected Exist attributes response: {response}")
+            results.extend(item for item in page_results if isinstance(item, dict))
+            next_value = response.get("next")
+            next_url = next_value if isinstance(next_value, str) and next_value else None
+
+        by_label = {definition["label"]: definition["key"] for definition in definitions}
+        mapping: dict[str, str] = {}
+        for item in results:
+            key = by_label.get(item.get("label"))
+            name = item.get("name")
+            if key and isinstance(name, str) and name:
+                mapping[key] = name
+        return mapping
+
+    def ensure_attributes(self, definitions: list[dict[str, Any]]) -> dict[str, str]:
+        existing = self.fetch_owned_attribute_names(definitions)
+        missing = [definition for definition in definitions if definition["key"] not in existing]
+        if not missing:
+            return existing
+
+        payload = [
+            {
+                "label": definition["label"],
+                "group": definition["group"],
+                "value_type": definition["value_type"],
+                "manual": definition["manual"],
+            }
+            for definition in missing
+        ]
+
+        response = self.request_json(
+            "POST",
+            f"{EXIST_API}/attributes/create/",
+            params={"success_objects": "1"},
+            data=json.dumps(payload),
+        )
+
+        by_label = {definition["label"]: definition["key"] for definition in missing}
+        updated = dict(existing)
+
+        for item in response.get("success", []):
+            key = by_label.get(item.get("label"))
+            if key:
+                updated[key] = item["name"]
+
+        failed = response.get("failed", [])
+        refreshed = dict(updated)
+        refreshed.update(self.fetch_owned_attribute_names(definitions))
+        unresolved = [definition["key"] for definition in missing if definition["key"] not in refreshed]
+        if not unresolved:
+            return refreshed
+
+        failed_descriptions = ", ".join(
+            f"{item.get('label', '<unknown>')}: {item.get('error', 'unknown error')}"
+            for item in failed
+        )
+        details = f"Missing attribute names for: {', '.join(unresolved)}"
+        if failed_descriptions:
+            details = f"{details}. Create errors: {failed_descriptions}"
+        raise RuntimeError(f"Could not ensure Exist attributes. {details}")
+
+    def post_updates(self, payload: list[dict[str, Any]]) -> Any:
+        return self.request_json(
+            "POST",
+            f"{EXIST_API}/attributes/update/",
+            data=json.dumps(payload),
+        )
