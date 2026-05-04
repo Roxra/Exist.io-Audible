@@ -7,6 +7,8 @@ Sync Audible listening data into [Exist](https://exist.io/) with Python. Uses th
 This script:
 
 - authorizes with Audible in your browser and stores reusable device credentials locally
+- authorizes with Exist in your browser and stores refreshable OAuth tokens locally
+- creates the required Exist attributes if they do not already exist
 - fetches today's Audible listening stats
 - writes the values into Exist
 
@@ -29,22 +31,26 @@ pip install -r requirements.txt
 - Redirect URI = http://localhost:8000/
 - OAuth2 client type = Confidential
 
-You will use the resulting access key for the 'EXIST_TOKEN" environment variable.
+You will use the resulting client ID and client secret for the OAuth environment variables below.
 
 3. Copy `.env.example` values into your shell environment.
 
 Required variables:
 
-- `EXIST_TOKEN`
+- `EXIST_CLIENT_ID`
+- `EXIST_CLIENT_SECRET`
 - `AUDIBLE_LOCALE`
 
 Optional variables:
 
+- `EXIST_REDIRECT_URI`
+- `EXIST_SCOPE`
 - `EXIST_USER_TIMEZONE`
 
 ## Local files
 
 - `audible_auth.json` stores the reusable Audible device credentials created by `python main.py auth`
+- `exist_oauth.json` stores the refreshable Exist OAuth tokens created by `python main.py exist-auth`
 
 ## First run
 
@@ -54,10 +60,16 @@ Authorize Audible in your browser and save credentials:
 python main.py auth
 ```
 
+Authorize Exist in your browser and save OAuth tokens:
+
+```bash
+python main.py exist-auth
+```
+
 Sync today's data:
 
 ```bash
 python main.py sync
 ```
 
-I'd recommend using Task Scheduler (or any equivalent) to run this script once a day at whatever time works best for your timezone and Audible's data availability.
+I'd recommend using Task Scheduler (or any equivalent) to run this script once a day just before midnight.

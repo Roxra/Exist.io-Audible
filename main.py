@@ -8,11 +8,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import audible
-import requests
+
+from exist_oauth import ExistOAuthClient
 
 
 BASE_DIR = Path(__file__).resolve().parent
 AUDIBLE_AUTH_FILE = BASE_DIR / "audible_auth.json"
+EXIST_OAUTH_FILE = BASE_DIR / "exist_oauth.json"
 EXIST_API = "https://exist.io/api/2"
 EXIST_ATTRIBUTE_DEFINITIONS = [
     {
@@ -47,15 +49,34 @@ def required_env(name: str) -> str:
     return value
 
 
-def exist_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {required_env('EXIST_TOKEN')}",
-        "Content-Type": "application/json",
-    }
-
-
 def audible_locale() -> str:
     return required_env("AUDIBLE_LOCALE")
+
+
+def exist_client_id() -> str:
+    return required_env("EXIST_CLIENT_ID")
+
+
+def exist_client_secret() -> str:
+    return required_env("EXIST_CLIENT_SECRET")
+
+
+def exist_redirect_uri() -> str:
+    return env("EXIST_REDIRECT_URI", "http://localhost:8000/") or "http://localhost:8000/"
+
+
+def exist_scope() -> str:
+    return env("EXIST_SCOPE", "media_write") or "media_write"
+
+
+def exist_oauth_client() -> ExistOAuthClient:
+    return ExistOAuthClient(
+        token_file=EXIST_OAUTH_FILE,
+        client_id=exist_client_id(),
+        client_secret=exist_client_secret(),
+        redirect_uri=exist_redirect_uri(),
+        scope=exist_scope(),
+    )
 
 
 def user_timezone() -> ZoneInfo:
@@ -87,30 +108,24 @@ def day_start_utc(day: str) -> str:
     return local_midnight.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def request_json(method: str, url: str, **kwargs: Any) -> Any:
-    response = requests.request(method, url, timeout=30, **kwargs)
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = response.text
+def exist_request_json(method: str, url: str, **kwargs: Any) -> Any:
+    return exist_oauth_client().request_json(method, url, **kwargs)
 
-    if not response.ok:
-        raise RuntimeError(f"{method} {url} failed with {response.status_code}: {payload}")
 
-    return payload
+def login_to_exist() -> None:
+    exist_oauth_client().login()
 
 
 def fetch_existing_attribute_names() -> dict[str, str]:
     results: list[dict[str, Any]] = []
-    next_url: str | None = f"{EXIST_API}/attributes/"
+    next_url: str | None = f"{EXIST_API}/attributes/owned/"
     params: dict[str, Any] | None = {
         "limit": 100,
-        "owned": "true",
         "include_inactive": "true",
     }
 
     while next_url:
-        response = request_json("GET", next_url, headers=exist_headers(), params=params)
+        response = exist_request_json("GET", next_url, params=params)
         params = None
         page_results = response.get("results", [])
         if not isinstance(page_results, list):
@@ -155,15 +170,13 @@ def ensure_exist_attributes() -> dict[str, str]:
         for definition in missing
     ]
 
-    response = request_json(
+    response = exist_request_json(
         "POST",
         f"{EXIST_API}/attributes/create/",
         params={"success_objects": "1"},
-        headers=exist_headers(),
         data=json.dumps(payload),
     )
 
-    # Match returned attributes back to our local keys by label.
     by_label = {definition["label"]: definition["key"] for definition in missing}
     updated = dict(existing)
 
@@ -182,13 +195,10 @@ def ensure_exist_attributes() -> dict[str, str]:
         f"{item.get('label', '<unknown>')}: {item.get('error', 'unknown error')}"
         for item in failed
     )
-    if unresolved:
-        details = f"Missing attribute names for: {', '.join(unresolved)}"
-        if failed_descriptions:
-            details = f"{details}. Create errors: {failed_descriptions}"
-        raise RuntimeError(f"Could not ensure Exist attributes. {details}")
-
-    return refreshed
+    details = f"Missing attribute names for: {', '.join(unresolved)}"
+    if failed_descriptions:
+        details = f"{details}. Create errors: {failed_descriptions}"
+    raise RuntimeError(f"Could not ensure Exist attributes. {details}")
 
 
 def load_auth() -> audible.Authenticator:
@@ -365,8 +375,13 @@ def fetch_finished_count(client: audible.Client, day: str) -> int:
     return 0
 
 
-def build_exist_payload(day: str, attribute_names: dict[str, str], stats: dict[str, Any], finished_count: int) -> list[dict[str, Any]]:
-    payload = [
+def build_exist_payload(
+    day: str,
+    attribute_names: dict[str, str],
+    stats: dict[str, Any],
+    finished_count: int,
+) -> list[dict[str, Any]]:
+    return [
         {
             "name": attribute_names["audible_listening_minutes"],
             "date": day,
@@ -379,14 +394,11 @@ def build_exist_payload(day: str, attribute_names: dict[str, str], stats: dict[s
         },
     ]
 
-    return payload
-
 
 def post_exist_updates(payload: list[dict[str, Any]]) -> Any:
-    return request_json(
+    return exist_request_json(
         "POST",
         f"{EXIST_API}/attributes/update/",
-        headers=exist_headers(),
         data=json.dumps(payload),
     )
 
@@ -424,6 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("auth", help="Authorize Audible in your browser and save device credentials.")
+    subparsers.add_parser("exist-auth", help="Authorize Exist in your browser and save OAuth tokens.")
     subparsers.add_parser("sync", help="Fetch Audible data and push today's values to Exist.")
     subparsers.add_parser("inspect-stats", help="Print the raw Audible daily stats response.")
     subparsers.add_parser("inspect-library", help="Print the first few Audible library items.")
@@ -438,6 +451,8 @@ def main() -> None:
 
     if args.command == "auth":
         login_to_audible()
+    elif args.command == "exist-auth":
+        login_to_exist()
     elif args.command == "sync":
         sync_today()
     elif args.command == "inspect-stats":
