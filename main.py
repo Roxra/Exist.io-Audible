@@ -99,6 +99,11 @@ def previous_days(limit: int, start_offset: int = 1) -> list[str]:
     return [(today - dt.timedelta(days=offset)).isoformat() for offset in range(start_offset, start_offset + limit)]
 
 
+def today_and_yesterday() -> list[str]:
+    today = dt.datetime.now().astimezone().date()
+    return [today.isoformat(), (today - dt.timedelta(days=1)).isoformat()]
+
+
 def chunked(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
     return [items[index:index + size] for index in range(0, len(items), size)]
 
@@ -323,8 +328,20 @@ def sync_day(day: str) -> Any:
 
 
 def sync_today() -> None:
-    day = user_today()
-    sync_day(day)
+    target_days = today_and_yesterday()
+    attribute_names = exist_oauth_client().ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
+    payload: list[dict[str, Any]] = []
+
+    with audible_client() as client:
+        for day in target_days:
+            stats = fetch_daily_stats(client, day)
+            finished_count = fetch_finished_count(client, day)
+            payload.extend(build_exist_payload(day, attribute_names, stats, finished_count))
+
+    result = post_exist_updates(payload)
+    logging.info("Synced %s values for %s and %s", len(result.get("success", [])), target_days[0], target_days[1])
+    if result.get("failed"):
+        raise RuntimeError(f"Some Exist updates failed: {result['failed']}")
 
 
 def sync_recent(days: int = 14) -> None:

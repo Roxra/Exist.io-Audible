@@ -37,14 +37,9 @@ You will use the resulting client ID and client secret for the OAuth environment
 
 Required variables:
 
-- `EXIST_CLIENT_ID`
-- `EXIST_CLIENT_SECRET`
-- `AUDIBLE_LOCALE`
-
-## Local files
-
-- `audible_auth.json` stores the reusable Audible device credentials created by `python main.py auth`
-- `exist_oauth.json` stores the refreshable Exist OAuth tokens created by `python main.py exist-auth`
+- `EXIST_CLIENT_ID` - From your Exist.io Developer API Client
+- `EXIST_CLIENT_SECRET` - From your Exist.io Developer API Client
+- `AUDIBLE_LOCALE` - Audible account Country code (https://audible.readthedocs.io/en/latest/marketplaces/marketplaces.html#country-codes) 
 
 ## First run
 
@@ -60,7 +55,7 @@ Authorize Exist in your browser and save OAuth tokens:
 python main.py exist-auth
 ```
 
-Sync today's data:
+Sync today's and yesterday's data:
 
 ```bash
 python main.py sync
