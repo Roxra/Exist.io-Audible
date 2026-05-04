@@ -16,6 +16,7 @@ AUDIBLE_AUTH_FILE = BASE_DIR / "audible_auth.json"
 EXIST_OAUTH_FILE = BASE_DIR / "exist_oauth.json"
 EXIST_REDIRECT_URI = "http://localhost:8000/"
 EXIST_SCOPE = "media_write"
+EXIST_MAX_UPDATE_OBJECTS = 36
 EXIST_ATTRIBUTE_DEFINITIONS = [
     {
         "key": "audible_listening_minutes",
@@ -84,6 +85,24 @@ def day_start_utc(day: str) -> str:
     return local_midnight.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def resolve_day(day: str | None = None) -> str:
+    if day:
+        return dt.date.fromisoformat(day).isoformat()
+    return user_today()
+
+
+def previous_days(limit: int, start_offset: int = 1) -> list[str]:
+    if limit < 1:
+        raise RuntimeError("Day limit must be at least 1.")
+
+    today = dt.datetime.now().astimezone().date()
+    return [(today - dt.timedelta(days=offset)).isoformat() for offset in range(start_offset, start_offset + limit)]
+
+
+def chunked(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    return [items[index:index + size] for index in range(0, len(items), size)]
+
+
 def login_to_exist() -> None:
     exist_oauth_client().login()
 
@@ -147,16 +166,17 @@ def walk_values(node: Any) -> list[Any]:
     return values
 
 
-def extract_minutes(stats_json: dict[str, Any]) -> int:
+def extract_minutes(stats_json: dict[str, Any], target_day: str) -> int:
     daily_stats = stats_json.get("aggregated_daily_listening_stats")
     if isinstance(daily_stats, list):
         if not daily_stats:
-            logging.info("Audible returned no daily listening rows; defaulting to 0 minutes for today.")
+            logging.info("Audible returned no daily listening rows; defaulting to 0 minutes for %s.", target_day)
             return 0
 
-        daily_candidates: list[int] = []
         for item in daily_stats:
             if not isinstance(item, dict):
+                continue
+            if item.get("interval_identifier") != target_day:
                 continue
 
             aggregated_sum = item.get("aggregated_sum")
@@ -172,12 +192,14 @@ def extract_minutes(stats_json: dict[str, Any]) -> int:
                 minutes = int(round(float(aggregated_sum)))
 
             if 0 <= minutes <= 1440:
-                daily_candidates.append(minutes)
+                logging.info("Using aggregated_daily_listening_stats[%s]=%s minutes", target_day, minutes)
+                return minutes
 
-        if daily_candidates:
-            best_daily = max(daily_candidates)
-            logging.info("Using aggregated_daily_listening_stats=%s minutes", best_daily)
-            return best_daily
+        logging.info(
+            "Audible returned daily listening rows, but none matched %s; defaulting to 0 minutes.",
+            target_day,
+        )
+        return 0
 
     candidates: list[tuple[int, int, str]] = []
 
@@ -244,7 +266,7 @@ def extract_minutes(stats_json: dict[str, Any]) -> int:
 
     raise RuntimeError(
         "Could not determine listening minutes from Audible stats response. "
-        "Run `python main.py inspect-stats` and map the response shape."
+        "Run `python main.py inspect --date YYYY-MM-DD` and inspect the response shape."
     )
 
 
@@ -272,7 +294,7 @@ def build_exist_payload(
         {
             "name": attribute_names["audible_listening_minutes"],
             "date": day,
-            "value": extract_minutes(stats),
+            "value": extract_minutes(stats, day),
         },
         {
             "name": attribute_names["audible_books_finished"],
@@ -286,10 +308,8 @@ def post_exist_updates(payload: list[dict[str, Any]]) -> Any:
     return exist_oauth_client().post_updates(payload)
 
 
-def sync_today() -> None:
+def sync_day(day: str) -> Any:
     attribute_names = exist_oauth_client().ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
-    day = user_today()
-
     with audible_client() as client:
         stats = fetch_daily_stats(client, day)
         finished_count = fetch_finished_count(client, day)
@@ -298,14 +318,58 @@ def sync_today() -> None:
     result = post_exist_updates(payload)
     logging.info("Synced %s values for %s", len(result.get("success", [])), day)
     if result.get("failed"):
-        raise RuntimeError(f"Some Exist updates failed: {result['failed']}")
+        raise RuntimeError(f"Some Exist updates failed for {day}: {result['failed']}")
+    return result
 
 
-def inspect_stats() -> None:
+def sync_today() -> None:
     day = user_today()
+    sync_day(day)
+
+
+def sync_recent(days: int = 14) -> None:
+    target_days = previous_days(days)
+    attribute_names = exist_oauth_client().ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
+    payload: list[dict[str, Any]] = []
     with audible_client() as client:
-        stats = fetch_daily_stats(client, day)
-    print(json.dumps(stats, indent=2))
+        for day in target_days:
+            stats = fetch_daily_stats(client, day)
+            finished_count = fetch_finished_count(client, day)
+            payload.extend(build_exist_payload(day, attribute_names, stats, finished_count))
+
+    successes = 0
+    failed_entries: list[Any] = []
+    for batch in chunked(payload, EXIST_MAX_UPDATE_OBJECTS):
+        result = post_exist_updates(batch)
+        successes += len(result.get("success", []))
+        failed_entries.extend(result.get("failed", []))
+
+    logging.info(
+        "Synced %s values across %s days (%s to %s)",
+        successes,
+        len(target_days),
+        target_days[-1],
+        target_days[0],
+    )
+    if failed_entries:
+        raise RuntimeError(f"Some Exist updates failed: {failed_entries}")
+
+
+def inspect(day: str | None = None) -> None:
+    resolved_day = resolve_day(day)
+    with audible_client() as client:
+        stats = fetch_daily_stats(client, resolved_day)
+        finished_count = fetch_finished_count(client, resolved_day)
+    print(
+        json.dumps(
+            {
+                "date": resolved_day,
+                "finished_count": finished_count,
+                "stats": stats,
+            },
+            indent=2,
+        )
+    )
 
 
 def inspect_library() -> None:
@@ -321,7 +385,21 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("auth", help="Authorize Audible in your browser and save device credentials.")
     subparsers.add_parser("exist-auth", help="Authorize Exist in your browser and save OAuth tokens.")
     subparsers.add_parser("sync", help="Fetch Audible data and push today's values to Exist.")
-    subparsers.add_parser("inspect-stats", help="Print the raw Audible daily stats response.")
+    sync_recent_parser = subparsers.add_parser(
+        "sync-recent",
+        help="Backfill recent days from yesterday backwards.",
+    )
+    sync_recent_parser.add_argument(
+        "--days",
+        type=int,
+        default=14,
+        help="Number of previous days to sync, counting backward from yesterday.",
+    )
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="Print the Audible daily stats and finished-book count for a date.",
+    )
+    inspect_parser.add_argument("--date", help="Inspect a specific local date in YYYY-MM-DD format.")
     subparsers.add_parser("inspect-library", help="Print the first few Audible library items.")
 
     return parser
@@ -338,8 +416,10 @@ def main() -> None:
         login_to_exist()
     elif args.command == "sync":
         sync_today()
-    elif args.command == "inspect-stats":
-        inspect_stats()
+    elif args.command == "sync-recent":
+        sync_recent(days=args.days)
+    elif args.command == "inspect":
+        inspect(day=args.date)
     elif args.command == "inspect-library":
         inspect_library()
     else:

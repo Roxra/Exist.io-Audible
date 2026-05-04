@@ -66,5 +66,23 @@ Sync today's data:
 python main.py sync
 ```
 
+Backfill recent days from yesterday backwards (defaults to 14 days):
+
+```bash
+python main.py sync-recent
+```
+
+Backfill a specific recent window:
+
+```bash
+python main.py sync-recent --days 7
+```
+
+Inspect the Audible daily stats and finished-book count for a specific day:
+
+```bash
+python main.py inspect --date 2026-05-03
+```
+
 I'd recommend using Task Scheduler (or any equivalent) to run this script once a day just before midnight.
 The script uses the machine's local timezone when deciding what counts as "today".
