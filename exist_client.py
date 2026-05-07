@@ -97,6 +97,16 @@ class ExistClient:
         if not isinstance(expires_in, (int, float)):
             raise RuntimeError(f"Exist token response missing expires_in: {token_payload}")
 
+        existing_attributes: dict[str, str] = {}
+        if self.token_file.exists():
+            try:
+                existing_payload = self.load_tokens()
+                existing_attributes = existing_payload.get("attributes", {})
+                if not isinstance(existing_attributes, dict):
+                    existing_attributes = {}
+            except RuntimeError:
+                existing_attributes = {}
+
         issued_at = utc_now()
         stored = {
             "access_token": token_payload.get("access_token"),
@@ -106,6 +116,7 @@ class ExistClient:
             "expires_in": int(expires_in),
             "issued_at": issued_at.isoformat(),
             "expires_at": (issued_at + dt.timedelta(seconds=int(expires_in))).isoformat(),
+            "attributes": existing_attributes,
         }
 
         if not stored["access_token"] or not stored["refresh_token"]:
@@ -280,6 +291,17 @@ class ExistClient:
         self.save_tokens(token_payload)
         logging.info("Saved Exist OAuth tokens to %s", self.token_file)
 
+    def load_attribute_names(self) -> dict[str, str]:
+        attributes = self.load_tokens().get("attributes", {})
+        if not isinstance(attributes, dict):
+            return {}
+        return {str(key): str(value) for key, value in attributes.items() if key and value}
+
+    def save_attribute_names(self, attribute_names: dict[str, str]) -> None:
+        tokens = self.load_tokens()
+        tokens["attributes"] = attribute_names
+        write_json_file(self.token_file, tokens)
+
     def fetch_owned_attribute_names(self, definitions: list[dict[str, Any]]) -> dict[str, str]:
         results: list[dict[str, Any]] = []
         next_url: str | None = f"{EXIST_API}/attributes/owned/"
@@ -311,6 +333,7 @@ class ExistClient:
         existing = self.fetch_owned_attribute_names(definitions)
         missing = [definition for definition in definitions if definition["key"] not in existing]
         if not missing:
+            self.save_attribute_names(existing)
             return existing
 
         payload = [
@@ -343,6 +366,7 @@ class ExistClient:
         refreshed.update(self.fetch_owned_attribute_names(definitions))
         unresolved = [definition["key"] for definition in missing if definition["key"] not in refreshed]
         if not unresolved:
+            self.save_attribute_names(refreshed)
             return refreshed
 
         failed_descriptions = ", ".join(
@@ -353,6 +377,16 @@ class ExistClient:
         if failed_descriptions:
             details = f"{details}. Create errors: {failed_descriptions}"
         raise RuntimeError(f"Could not ensure Exist attributes. {details}")
+
+    def attribute_names_for(self, definitions: list[dict[str, Any]]) -> dict[str, str]:
+        stored = self.load_attribute_names()
+        missing = [definition["key"] for definition in definitions if definition["key"] not in stored]
+        if missing:
+            raise RuntimeError(
+                "Missing stored Exist attribute names for: "
+                f"{', '.join(missing)}. Run `python main.py exist-auth` again."
+            )
+        return stored
 
     def build_update_payload(
         self,

@@ -49,7 +49,7 @@ Authorize Audible in your browser and save credentials:
 python main.py auth
 ```
 
-Authorize Exist in your browser and save OAuth tokens:
+Authorize Exist in your browser and save credentials, this also ensures the required Exist attributes exist and stores their resolved names for future syncs:
 
 ```bash
 python main.py exist-auth

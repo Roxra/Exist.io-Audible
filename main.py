@@ -113,7 +113,9 @@ def recent_days(limit: int) -> list[str]:
 
 
 def login_to_exist() -> None:
-    exist_client().login()
+    client = exist_client()
+    client.login()
+    client.ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
 
 
 def load_auth() -> audible.Authenticator:
@@ -345,7 +347,7 @@ def log_daily_values(day: str, values: dict[str, Any]) -> None:
 
 def sync_days(target_days: list[str]) -> None:
     exist = exist_client()
-    attribute_names = exist.ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
+    attribute_names = exist.attribute_names_for(EXIST_ATTRIBUTE_DEFINITIONS)
     payload: list[dict[str, Any]] = []
 
     with audible_client() as audible_api:
