@@ -201,7 +201,6 @@ def extract_minutes(stats_json: dict[str, Any], target_day: str) -> int:
                 minutes = int(round(float(aggregated_sum)))
 
             if 0 <= minutes <= 1440:
-                logging.info("Using aggregated_daily_listening_stats[%s]=%s minutes", target_day, minutes)
                 return minutes
 
         logging.info(
@@ -335,6 +334,15 @@ def build_daily_values(stats: dict[str, Any], day: str, finished_count: int) -> 
     }
 
 
+def log_daily_values(day: str, values: dict[str, Any]) -> None:
+    logging.info(
+        "%s -> %s listening minutes - %s book(s) finished",
+        day,
+        values["audible_listening_minutes"],
+        values["audible_books_finished"],
+    )
+
+
 def sync_days(target_days: list[str]) -> None:
     exist = exist_client()
     attribute_names = exist.ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
@@ -344,11 +352,13 @@ def sync_days(target_days: list[str]) -> None:
         for day in target_days:
             stats = fetch_daily_stats(audible_api, day)
             finished_count = fetch_finished_count(audible_api, day)
+            values = build_daily_values(stats, day, finished_count)
+            log_daily_values(day, values)
             payload.extend(
                 exist.build_update_payload(
                     attribute_names,
                     day,
-                    build_daily_values(stats, day, finished_count),
+                    values,
                 )
             )
 
@@ -419,6 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    logging.getLogger("audible").setLevel(logging.WARNING)
     parser = build_parser()
     args = parser.parse_args()
 
