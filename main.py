@@ -84,6 +84,20 @@ def day_start_utc(day: str) -> str:
     return local_midnight.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def day_bounds_utc(day: str) -> tuple[dt.datetime, dt.datetime]:
+    local_day = dt.date.fromisoformat(day)
+    local_timezone = dt.datetime.now().astimezone().tzinfo
+    if local_timezone is None:
+        raise RuntimeError("Could not determine the system local timezone.")
+
+    day_start_local = dt.datetime.combine(local_day, dt.time.min, tzinfo=local_timezone)
+    next_day_start_local = day_start_local + dt.timedelta(days=1)
+    return (
+        day_start_local.astimezone(dt.timezone.utc),
+        next_day_start_local.astimezone(dt.timezone.utc),
+    )
+
+
 def resolve_day(day: str | None = None) -> str:
     if day:
         return dt.date.fromisoformat(day).isoformat()
@@ -265,18 +279,53 @@ def extract_minutes(stats_json: dict[str, Any], target_day: str) -> int:
     )
 
 
-def fetch_finished_count(client: audible.Client, day: str) -> int:
+def fetch_finished_raw(client: audible.Client, day: str) -> Any:
     start_date = day_start_utc(day)
-    response = client.get("1.0/stats/status/finished", start_date=start_date)
+    return client.get("1.0/stats/status/finished", start_date=start_date)
+
+
+def parse_rfc3339_utc(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+
+
+def count_finished_events_in_day(response: Any, day: str) -> int:
+    day_start, next_day_start = day_bounds_utc(day)
+
     if isinstance(response, list):
-        return len(response)
+        events = response
+    elif isinstance(response, dict):
+        events = response.get("mark_as_finished_status_list", [])
+    else:
+        events = []
 
-    for key in ("items", "results", "finished_titles"):
-        value = response.get(key)
-        if isinstance(value, list):
-            return len(value)
+    if not isinstance(events, list):
+        return 0
 
-    return 0
+    finished_count = 0
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        if item.get("is_marked_as_finished") is not True:
+            continue
+
+        event_timestamp = item.get("event_timestamp")
+        if not isinstance(event_timestamp, str) or not event_timestamp:
+            continue
+
+        try:
+            event_time = parse_rfc3339_utc(event_timestamp)
+        except ValueError:
+            continue
+
+        if day_start <= event_time < next_day_start:
+            finished_count += 1
+
+    return finished_count
+
+
+def fetch_finished_count(client: audible.Client, day: str) -> int:
+    response = fetch_finished_raw(client, day)
+    return count_finished_events_in_day(response, day)
 
 
 def build_daily_values(stats: dict[str, Any], day: str, finished_count: int) -> dict[str, Any]:
