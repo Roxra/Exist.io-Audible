@@ -8,7 +8,7 @@ from typing import Any
 
 import audible
 
-from shared.exist_shared import ExistClient
+from exist_io_core_client.exist_client import ExistClient
 
 
 BASE_DIR = Path(__file__).resolve().parent
