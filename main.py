@@ -8,7 +8,7 @@ from typing import Any
 
 import audible
 
-from exist_client import ExistClient
+from shared.exist_shared import ExistClient
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -115,7 +115,6 @@ def recent_days(limit: int) -> list[str]:
 def login_to_exist() -> None:
     client = exist_client()
     client.login()
-    client.ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
 
 
 def load_auth() -> audible.Authenticator:
@@ -347,7 +346,7 @@ def log_daily_values(day: str, values: dict[str, Any]) -> None:
 
 def sync_days(target_days: list[str]) -> None:
     exist = exist_client()
-    attribute_names = exist.attribute_names_for(EXIST_ATTRIBUTE_DEFINITIONS)
+    attribute_names = exist.ensure_attributes(EXIST_ATTRIBUTE_DEFINITIONS)
     payload: list[dict[str, Any]] = []
 
     with audible_client() as audible_api:
@@ -358,6 +357,7 @@ def sync_days(target_days: list[str]) -> None:
             log_daily_values(day, values)
             payload.extend(
                 exist.build_update_payload(
+                    EXIST_ATTRIBUTE_DEFINITIONS,
                     attribute_names,
                     day,
                     values,

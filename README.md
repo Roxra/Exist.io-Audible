@@ -49,7 +49,7 @@ Authorize Audible in your browser and save credentials:
 python main.py auth
 ```
 
-Authorize Exist in your browser and save credentials, this also ensures the required Exist attributes exist and stores their resolved names for future syncs:
+Authorize Exist in your browser and save credentials:
 
 ```bash
 python main.py exist-auth
@@ -60,6 +60,8 @@ Sync today's and yesterday's data:
 ```bash
 python main.py sync
 ```
+
+The sync command creates or reuses the required Exist attributes and stores their resolved names.
 
 Sync a larger recent window including today:
 
